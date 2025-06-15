@@ -33,35 +33,50 @@ src/browserbot/
 - Redis (for memory persistence)
 - VNC viewer (for browser visualization)
 
-## Installation
+## 🚀 Quick Start (Docker-First Approach)
 
+BrowserBot is designed to run in Docker for maximum security and consistency. **No Python installation required!**
+
+### Prerequisites
+- Docker Desktop (Windows/macOS) or Docker Engine (Linux)
+- 8GB+ RAM recommended
+
+### One-Command Launch
+
+**Windows:**
+```cmd
+run.bat
+```
+
+**Unix/Linux/macOS:**
+```bash
+./run.sh
+```
+
+**That's it!** BrowserBot will automatically:
+1. Check Docker installation
+2. Create environment configuration  
+3. Build the Docker image
+4. Start interactive session with GUI support
+
+### First-Time Setup
 1. Clone the repository:
 ```bash
 git clone https://github.com/yourusername/BrowserBot.git
 cd BrowserBot
 ```
 
-2. Create a virtual environment:
+2. Add your API key to `.env` (created automatically):
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+OPENROUTER_API_KEY=your-openrouter-api-key-here
 ```
 
-3. Install dependencies:
+3. Launch BrowserBot:
 ```bash
-pip install -e ".[dev]"
+./run.sh
 ```
 
-4. Install Playwright browsers:
-```bash
-playwright install chromium
-```
-
-5. Set up environment variables:
-```bash
-cp .env.example .env
-# Edit .env with your API keys and configuration
-```
+For detailed Docker usage, see [DOCKER_FIRST_USAGE.md](DOCKER_FIRST_USAGE.md)
 
 ## Configuration
 
@@ -78,8 +93,53 @@ See `src/browserbot/core/config.py` for all available configuration options.
 
 ## Usage
 
-### Basic Example
+### Interactive Mode (Recommended)
 
+Launch the interactive terminal:
+```bash
+./run.sh
+```
+
+Then use natural language commands:
+```
+BrowserBot> Go to google.com and search for python automation
+BrowserBot> task: Navigate to news websites and summarize headlines  
+BrowserBot> chat What can you help me automate?
+BrowserBot> screenshot
+BrowserBot> help
+```
+
+### Visual Browser Access
+
+Connect with VNC to see the browser in action:
+- **Host:** localhost:5900
+- **Password:** browserbot
+
+```bash
+# macOS
+open vnc://localhost:5900
+
+# Linux
+vncviewer localhost:5900
+
+# Windows: Use any VNC client
+```
+
+### Background Services Mode
+
+For persistent operation:
+```bash
+./run.sh services
+```
+
+Access via:
+- **VNC:** localhost:5900
+- **Metrics:** http://localhost:8000
+- **API:** http://localhost:8080
+
+### Programmatic Usage (Advanced)
+
+For custom integrations, you can also use the Python API:
 ```python
 from browserbot import BrowserAgent
 
@@ -94,32 +154,13 @@ result = await agent.execute_task(
 print(result)
 ```
 
-### Docker Usage
-
-Build and run with Docker:
-
-```bash
-docker-compose up --build
-```
-
-Access the browser via VNC:
-```bash
-vncviewer localhost:5900
-# Password: browserbot
-```
-
 ### Running Tests
 
-Run all tests:
 ```bash
-pytest
-```
-
-Run specific test categories:
-```bash
-pytest -m unit          # Unit tests only
-pytest -m integration   # Integration tests only
-pytest -m e2e          # End-to-end tests only
+./run.sh test           # Run all tests in container
+./run.sh build          # Rebuild Docker image
+./run.sh logs           # View container logs
+./run.sh status         # Show running containers
 ```
 
 ## Development

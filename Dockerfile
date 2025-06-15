@@ -50,12 +50,14 @@ RUN apt-get update && apt-get install -y \
     vim \
     htop \
     net-tools \
+    sudo \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user for security
 RUN useradd -m -s /bin/bash browserbot && \
     mkdir -p /home/browserbot/app && \
-    chown -R browserbot:browserbot /home/browserbot
+    chown -R browserbot:browserbot /home/browserbot && \
+    echo "browserbot ALL=(ALL) NOPASSWD: /usr/bin/supervisord, /usr/bin/pkill" >> /etc/sudoers
 
 # Install Chrome (latest stable)
 RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - && \
@@ -88,10 +90,12 @@ COPY --chown=browserbot:browserbot . .
 # Create necessary directories
 RUN mkdir -p logs data config
 
-# Supervisor configuration
+# Copy scripts and configuration
 USER root
 COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
-RUN chmod 644 /etc/supervisor/conf.d/supervisord.conf
+COPY docker/interactive-entrypoint.sh /usr/local/bin/interactive-entrypoint.sh
+RUN chmod 644 /etc/supervisor/conf.d/supervisord.conf && \
+    chmod +x /usr/local/bin/interactive-entrypoint.sh
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
