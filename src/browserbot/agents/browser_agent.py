@@ -7,10 +7,12 @@ from typing import Dict, Any, List, Optional, AsyncIterator
 from datetime import datetime
 import json
 
-from langchain.agents import AgentExecutor, create_openai_tools_agent
-from langchain.memory import ConversationBufferWindowMemory
+from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_openai import ChatOpenAI
-from langchain.schema import BaseMessage, HumanMessage, AIMessage
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, trim_messages
+from langchain_core.chat_history import BaseChatMessageHistory
+from langchain_core.runnables.history import RunnableWithMessageHistory
+from pydantic import BaseModel, Field
 
 from ..browser.browser_manager import BrowserManager
 from ..browser.page_controller import PageController
@@ -24,6 +26,30 @@ from .tools import create_browser_tools
 from .prompts import BrowserAgentPrompts
 
 logger = get_logger(__name__)
+
+
+class InMemoryHistory(BaseChatMessageHistory, BaseModel):
+    """In-memory implementation of chat message history with automatic trimming."""
+    
+    messages: List[BaseMessage] = Field(default_factory=list)
+    max_message_pairs: int = Field(default=10)
+    
+    def add_messages(self, messages: List[BaseMessage]) -> None:
+        """Add messages and automatically trim to window size."""
+        self.messages.extend(messages)
+        
+        # Keep only the last max_message_pairs * 2 messages
+        max_messages = self.max_message_pairs * 2
+        if len(self.messages) > max_messages:
+            # Ensure we start with a human message
+            trim_point = len(self.messages) - max_messages
+            while trim_point < len(self.messages) and isinstance(self.messages[trim_point], AIMessage):
+                trim_point += 1
+            self.messages = self.messages[trim_point:]
+    
+    def clear(self) -> None:
+        """Clear all messages."""
+        self.messages = []
 
 
 class BrowserAgent:
@@ -46,11 +72,10 @@ class BrowserAgent:
             max_browsers=max_browsers,
             stealth_config=stealth_config
         )
-        self.memory = ConversationBufferWindowMemory(
-            k=memory_size,
-            return_messages=True,
-            memory_key="chat_history"
-        )
+        
+        # Memory configuration
+        self.memory_size = memory_size
+        self.chat_histories: Dict[str, InMemoryHistory] = {}
         
         # Initialize LLM
         self.llm = self._create_llm()
@@ -59,6 +84,16 @@ class BrowserAgent:
         self.agent_executor: Optional[AgentExecutor] = None
         self.current_page_controller: Optional[PageController] = None
         self.session_id: str = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        # Create message trimmer for consistent window behavior
+        self.message_trimmer = trim_messages(
+            max_tokens=self.memory_size * 2,  # Convert pairs to message count
+            strategy="last",
+            token_counter=len,  # Count messages instead of tokens
+            include_system=True,
+            allow_partial=False,
+            start_on="human"
+        )
         
         logger.info(
             "Browser agent initialized",
@@ -80,18 +115,33 @@ class BrowserAgent:
         try:
             model_config = settings.get_model_config()
             
+            # Add OpenRouter headers if using OpenRouter
+            default_headers = {}
+            if "openrouter" in model_config.get("base_url", "").lower():
+                default_headers = {
+                    "HTTP-Referer": "https://github.com/BrowserBot",
+                    "X-Title": "BrowserBot"
+                }
+            
             return ChatOpenAI(
                 model=model_config["model"],
                 temperature=model_config["temperature"],
                 max_tokens=model_config["max_tokens"],
                 openai_api_key=model_config["api_key"],
                 openai_api_base=model_config["base_url"],
-                streaming=True
+                streaming=True,
+                default_headers=default_headers
             )
             
         except Exception as e:
             logger.error("Failed to create LLM", error=str(e))
             raise ConfigurationError(f"Failed to create language model: {e}")
+    
+    def _get_session_history(self, session_id: str) -> BaseChatMessageHistory:
+        """Get or create chat history for a session."""
+        if session_id not in self.chat_histories:
+            self.chat_histories[session_id] = InMemoryHistory(max_message_pairs=self.memory_size)
+        return self.chat_histories[session_id]
     
     async def execute_task(
         self,
@@ -182,14 +232,16 @@ class BrowserAgent:
                 self.agent_executor = await self._create_agent_executor()
             
             # Process the message
-            response = await self.agent_executor.ainvoke({
-                "input": message,
-                "chat_history": self.memory.chat_memory.messages
-            })
+            response = await self.agent_executor.ainvoke(
+                {"input": message}
+            )
             
-            # Update memory
-            self.memory.chat_memory.add_user_message(message)
-            self.memory.chat_memory.add_ai_message(response["output"])
+            # Add messages to history
+            history = self._get_session_history(self.session_id)
+            history.add_messages([
+                HumanMessage(content=message),
+                AIMessage(content=response["output"])
+            ])
             
             return {
                 "success": True,
@@ -263,29 +315,70 @@ class BrowserAgent:
             }
     
     async def _create_agent_executor(self) -> AgentExecutor:
-        """Create an agent executor with browser tools."""
+        """Create an agent executor with intelligent model-specific handling."""
         if not self.current_page_controller:
             raise ConfigurationError("No active page controller")
         
         # Create browser automation tools
         tools = create_browser_tools(self.current_page_controller)
         
-        # Create the agent
+        # Get the base prompt and create agent
         prompt = BrowserAgentPrompts.get_system_prompt()
-        agent = create_openai_tools_agent(self.llm, tools, prompt)
         
-        # Create executor
-        agent_executor = AgentExecutor(
-            agent=agent,
-            tools=tools,
-            verbose=True,
-            return_intermediate_steps=True,
-            max_iterations=15,
-            handle_parsing_errors=True,
-            memory=self.memory
-        )
+        # Intelligent model detection and handling
+        model_lower = self.model_name.lower()
         
-        return agent_executor
+        # Models with strong native tool calling support
+        if any(model in model_lower for model in ["deepseek", "qwen", "gpt-", "claude", "gemini"]):
+            logger.info("Using native tool calling agent", model=self.model_name)
+            
+            # Use create_tool_calling_agent for models with excellent tool calling
+            agent = create_tool_calling_agent(self.llm, tools, prompt)
+            
+            agent_executor = AgentExecutor(
+                agent=agent,
+                tools=tools,
+                verbose=True,
+                return_intermediate_steps=True,
+                max_iterations=15,
+                handle_parsing_errors=True
+            )
+            
+            return agent_executor
+            
+        elif "mistral" in model_lower:
+            logger.info("Using custom Mistral tool executor", model=self.model_name)
+            
+            # For Mistral models, use custom agent with manual tool execution
+            from .mistral_tool_executor import MistralToolExecutor
+            tool_executor = MistralToolExecutor(tools, self.llm)
+            return tool_executor
+            
+        else:
+            logger.info("Using fallback tool calling agent", model=self.model_name)
+            
+            # Default fallback for unknown models
+            try:
+                agent = create_tool_calling_agent(self.llm, tools, prompt)
+                
+                agent_executor = AgentExecutor(
+                    agent=agent,
+                    tools=tools,
+                    verbose=True,
+                    return_intermediate_steps=True,
+                    max_iterations=15,
+                    handle_parsing_errors=True
+                )
+                
+                return agent_executor
+                
+            except Exception as e:
+                logger.warning("Standard tool calling failed, using Mistral fallback", error=str(e))
+                
+                # Ultimate fallback to custom parser
+                from .mistral_tool_executor import MistralToolExecutor
+                tool_executor = MistralToolExecutor(tools, self.llm)
+                return tool_executor
     
     @with_retry(max_attempts=2, exceptions=(AIModelError,))
     async def _execute_with_agent(
@@ -299,15 +392,19 @@ class BrowserAgent:
         try:
             # Prepare input
             input_data = {
-                "input": task,
-                "chat_history": self.memory.chat_memory.messages
+                "input": task
             }
             
             if context:
                 input_data["context"] = json.dumps(context, indent=2)
             
-            # Execute
+            logger.debug(f"Executing agent with input: {input_data}")
+            logger.debug(f"Using model: {self.model_name}")
+            
+            # Execute without session configuration since we're not using RunnableWithMessageHistory
             result = await agent_executor.ainvoke(input_data)
+            
+            logger.debug(f"Agent execution result: {result}")
             
             return {
                 "success": True,
@@ -318,6 +415,8 @@ class BrowserAgent:
             }
             
         except Exception as e:
+            logger.error(f"Agent execution error: {type(e).__name__}: {str(e)}", exc_info=True)
+            
             if "rate limit" in str(e).lower() or "quota" in str(e).lower():
                 raise AIModelError(f"API rate limit or quota exceeded: {e}")
             elif "timeout" in str(e).lower():
@@ -336,7 +435,9 @@ class BrowserAgent:
             # This is a simplified streaming implementation
             # In a full implementation, you'd want to integrate with LangChain's streaming callbacks
             
-            input_data = {"input": task}
+            input_data = {
+                "input": task
+            }
             if context:
                 input_data["context"] = json.dumps(context, indent=2)
             
@@ -379,19 +480,22 @@ class BrowserAgent:
         return None
     
     def get_conversation_history(self) -> List[BaseMessage]:
-        """Get the conversation history."""
-        return self.memory.chat_memory.messages
+        """Get the conversation history for the current session."""
+        history = self._get_session_history(self.session_id)
+        return history.messages
     
     def clear_conversation_history(self) -> None:
-        """Clear the conversation history."""
-        self.memory.clear()
+        """Clear the conversation history for the current session."""
+        history = self._get_session_history(self.session_id)
+        history.clear()
     
     def get_session_stats(self) -> Dict[str, Any]:
         """Get session statistics."""
+        history = self._get_session_history(self.session_id)
         return {
             "session_id": self.session_id,
             "model_name": self.model_name,
-            "conversation_length": len(self.memory.chat_memory.messages),
+            "conversation_length": len(history.messages),
             "browser_stats": self.browser_manager.get_stats(),
             "action_history": (
                 self.current_page_controller.get_action_history()

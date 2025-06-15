@@ -23,6 +23,12 @@ async def interactive_mode():
     async with BrowserAgent() as agent:
         while True:
             try:
+                # Handle EOF gracefully by checking if stdin is available
+                import sys
+                if not sys.stdin.isatty():
+                    print("❌ No interactive terminal available. Use --task for single task execution.")
+                    break
+                    
                 user_input = input("\nBrowserBot> ").strip()
                 
                 if not user_input:
@@ -87,6 +93,9 @@ async def interactive_mode():
                         
             except KeyboardInterrupt:
                 print("\nUse 'quit' to exit properly")
+            except EOFError:
+                print("\n❌ End of input detected. Exiting...")
+                break
             except Exception as e:
                 print(f"❌ Unexpected error: {e}")
                 logger.error("Interactive mode error", error=str(e))

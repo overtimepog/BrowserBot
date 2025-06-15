@@ -2,7 +2,7 @@
 Configuration management for BrowserBot.
 """
 
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, validator
@@ -15,7 +15,8 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
-        extra="ignore"
+        extra="ignore",
+        protected_namespaces=('settings_',)
     )
     
     # API Keys
@@ -29,7 +30,7 @@ class Settings(BaseSettings):
         description="OpenRouter API base URL"
     )
     model_name: str = Field(
-        default="deepseek/deepseek-r1-0528-qwen3-8b:free",
+        default="deepseek/deepseek-chat:free",
         description="Default AI model to use"
     )
     model_temperature: float = Field(
@@ -110,7 +111,7 @@ class Settings(BaseSettings):
         default="change-me-in-production",
         description="Secret key for encryption"
     )
-    allowed_origins: list[str] = Field(
+    allowed_origins: Union[str, list[str]] = Field(
         default=["http://localhost:3000"],
         description="Allowed CORS origins"
     )
@@ -160,15 +161,30 @@ class Settings(BaseSettings):
             path.parent.mkdir(parents=True, exist_ok=True)
         return v
     
+    @validator("allowed_origins", pre=True)
+    def parse_allowed_origins(cls, v) -> list[str]:
+        """Parse comma-separated string into list."""
+        if isinstance(v, str):
+            return [origin.strip() for origin in v.split(",") if origin.strip()]
+        elif isinstance(v, list):
+            return v
+        return ["http://localhost:3000"]
+    
     def get_model_config(self) -> Dict[str, Any]:
         """Get model configuration for LangChain."""
-        return {
+        config = {
             "model": self.model_name,
             "temperature": self.model_temperature,
             "max_tokens": self.model_max_tokens,
             "api_key": self.openrouter_api_key,
             "base_url": self.model_url,
         }
+        
+        # Use lower temperature for Mistral models to improve tool calling reliability
+        if "mistral" in self.model_name.lower() and "openrouter" in self.model_url.lower():
+            config["temperature"] = 0.1
+            
+        return config
     
     def get_browser_config(self) -> Dict[str, Any]:
         """Get browser configuration for Playwright."""

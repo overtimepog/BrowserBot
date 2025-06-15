@@ -59,12 +59,20 @@ RUN useradd -m -s /bin/bash browserbot && \
     chown -R browserbot:browserbot /home/browserbot && \
     echo "browserbot ALL=(ALL) NOPASSWD: /usr/bin/supervisord, /usr/bin/pkill" >> /etc/sudoers
 
-# Install Chrome (latest stable)
-RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - && \
-    echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list && \
-    apt-get update && \
-    apt-get install -y google-chrome-stable && \
-    rm -rf /var/lib/apt/lists/*
+# Install browser (Chrome on AMD64, Chromium on ARM64)
+RUN ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "amd64" ]; then \
+        wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome-keyring.gpg && \
+        echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list && \
+        apt-get update && \
+        apt-get install -y google-chrome-stable && \
+        rm -rf /var/lib/apt/lists/*; \
+    else \
+        apt-get update && \
+        apt-get install -y chromium-browser && \
+        rm -rf /var/lib/apt/lists/* && \
+        ln -sf /usr/bin/chromium-browser /usr/bin/google-chrome; \
+    fi
 
 # Configure VNC and display
 RUN mkdir -p /home/browserbot/.vnc && \
@@ -78,14 +86,23 @@ WORKDIR /home/browserbot/app
 # Copy requirements first for better caching
 COPY --chown=browserbot:browserbot pyproject.toml .python-version ./
 
-# Upgrade pip and install dependencies
-RUN python3.11 -m pip install --upgrade pip setuptools wheel && \
-    python3.11 -m pip install -e . && \
-    python3.11 -m playwright install chromium && \
-    python3.11 -m playwright install-deps
+# Upgrade pip and install only external dependencies
+RUN python3.11 -m pip install --upgrade pip setuptools wheel
 
 # Copy application code
 COPY --chown=browserbot:browserbot . .
+
+# Install package
+RUN python3.11 -m pip install -e .
+
+# Install browser dependencies as root first
+USER root
+RUN python3.11 -m pip install playwright && \
+    python3.11 -m playwright install-deps
+USER browserbot
+
+# Download browser as user
+RUN python3.11 -m playwright install chromium
 
 # Create necessary directories
 RUN mkdir -p logs data config

@@ -18,7 +18,7 @@ class TestSettings:
         settings = Settings(openrouter_api_key="test-key")
         
         assert settings.openrouter_api_key == "test-key"
-        assert settings.model_name == "deepseek/deepseek-r1-0528-qwen3-8b:free"
+        assert settings.model_name == "deepseek/deepseek-chat:free"
         assert settings.browser_headless is False
         assert settings.browser_timeout == 30000
         assert settings.max_concurrent_browsers == 5

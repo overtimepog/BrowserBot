@@ -16,10 +16,19 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
     retry_if_exception_type,
-    before_retry,
-    after_retry,
     RetryCallState
 )
+
+# Try to import before_retry and after_retry, fallback if not available
+try:
+    from tenacity import before_retry, after_retry
+except ImportError:
+    # Fallback for older versions of tenacity
+    def before_retry(func):
+        return func
+    
+    def after_retry(func):
+        return func
 
 from .logger import get_logger
 from .errors import BrowserBotError, NetworkError, RateLimitError
@@ -164,12 +173,14 @@ def calculate_backoff_with_jitter(
 
 def log_before_retry(retry_state: RetryCallState) -> None:
     """Log before retry attempt."""
-    logger.warning(
-        "Retrying function",
-        function=retry_state.fn.__name__,
-        attempt=retry_state.attempt_number,
-        exception=str(retry_state.outcome.exception()) if retry_state.outcome else None
-    )
+    # Only log if this is actually a retry (attempt > 1)
+    if retry_state.attempt_number > 1:
+        logger.warning(
+            "Retrying function",
+            function=retry_state.fn.__name__,
+            attempt=retry_state.attempt_number,
+            exception=str(retry_state.outcome.exception()) if retry_state.outcome else None
+        )
 
 
 def log_after_retry(retry_state: RetryCallState) -> None:
@@ -197,13 +208,24 @@ def with_retry(
         max_delay: Maximum delay between retries
         exceptions: Exceptions to retry on
     """
-    return retry(
-        stop=stop_after_attempt(max_attempts),
-        wait=wait_exponential(multiplier=base_delay, max=max_delay),
-        retry=retry_if_exception_type(exceptions),
-        before=log_before_retry,
-        after=log_after_retry
-    )
+    retry_kwargs = {
+        'stop': stop_after_attempt(max_attempts),
+        'wait': wait_exponential(multiplier=base_delay, max=max_delay),
+        'retry': retry_if_exception_type(exceptions)
+    }
+    
+    # Add before/after callbacks if available
+    try:
+        retry_kwargs['before'] = before_retry(log_before_retry)
+        retry_kwargs['after'] = after_retry(log_after_retry)
+    except (TypeError, ImportError):
+        # Use older parameter names or skip callbacks
+        try:
+            retry_kwargs['before_sleep'] = log_before_retry
+        except:
+            pass  # Skip callbacks if not supported
+    
+    return retry(**retry_kwargs)
 
 
 def with_circuit_breaker(

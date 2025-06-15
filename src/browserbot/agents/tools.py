@@ -2,14 +2,24 @@
 LangChain tools for browser automation.
 """
 
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional, Union, Type
 import asyncio
 from abc import ABC, abstractmethod
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 import json
 
 from langchain.tools import BaseTool
-from langchain.callbacks.manager import CallbackManagerForToolUse
+try:
+    from langchain.callbacks.manager import CallbackManagerForToolRun as CallbackManagerForToolUse
+except ImportError:
+    # Fallback for older versions or different callback manager names
+    try:
+        from langchain.callbacks.manager import CallbackManagerForToolUse
+    except ImportError:
+        # Create a minimal fallback callback manager
+        class CallbackManagerForToolUse:
+            def on_tool_end(self, result): pass
+            def on_tool_error(self, error): pass
 
 from ..browser.browser_manager import BrowserManager
 from ..browser.page_controller import PageController, ActionResult, WaitStrategy
@@ -68,9 +78,12 @@ class ScreenshotInput(BrowserToolInput):
 class BrowserTool(BaseTool, ABC):
     """Base class for browser automation tools."""
     
-    def __init__(self, page_controller: PageController):
-        super().__init__()
-        self.page_controller = page_controller
+    # Pydantic v2 configuration to allow arbitrary types
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
+    # Define page_controller as a Pydantic field
+    # Note: We don't exclude it since it's needed for the tool to function
+    page_controller: PageController = Field(default=None)
     
     def _run(self, *args, **kwargs) -> str:
         """Synchronous run method (not used for async tools)."""
@@ -121,9 +134,9 @@ class BrowserTool(BaseTool, ABC):
 class NavigationTool(BrowserTool):
     """Tool for page navigation."""
     
-    name = "navigate"
-    description = "Navigate to a specific URL. Use this to go to websites or change pages."
-    args_schema = NavigationInput
+    name: str = "navigate"
+    description: str = "Navigate to a specific URL. Use this to go to websites or change pages."
+    args_schema: Type[BaseModel] = NavigationInput
     
     async def execute(self, tool_input: NavigationInput) -> Dict[str, Any]:
         """Navigate to the specified URL."""
@@ -158,8 +171,8 @@ class NavigationTool(BrowserTool):
 class InteractionTool(BrowserTool):
     """Tool for element interactions (click, type, select)."""
     
-    name = "interact"
-    description = "Interact with web elements - click buttons, type text, select options, etc."
+    name: str = "interact"
+    description: str = "Interact with web elements - click buttons, type text, select options, etc."
     
     class InteractionInput(BrowserToolInput):
         """Input for interaction operations."""
@@ -170,7 +183,7 @@ class InteractionTool(BrowserTool):
         button: str = Field(default="left", description="Mouse button for click")
         clear_first: bool = Field(default=True, description="Clear before typing")
     
-    args_schema = InteractionInput
+    args_schema: Type[BaseModel] = InteractionInput
     
     async def execute(self, tool_input: InteractionInput) -> Dict[str, Any]:
         """Execute the interaction."""
@@ -221,9 +234,9 @@ class InteractionTool(BrowserTool):
 class ExtractionTool(BrowserTool):
     """Tool for extracting data from web pages."""
     
-    name = "extract"
-    description = "Extract text, attributes, or structured data from web pages."
-    args_schema = ExtractInput
+    name: str = "extract"
+    description: str = "Extract text, attributes, or structured data from web pages."
+    args_schema: Type[BaseModel] = ExtractInput
     
     async def execute(self, tool_input: ExtractInput) -> Dict[str, Any]:
         """Extract data from the page."""
@@ -273,9 +286,9 @@ class ExtractionTool(BrowserTool):
 class ScreenshotTool(BrowserTool):
     """Tool for taking screenshots."""
     
-    name = "screenshot"
-    description = "Take screenshots of the current page or specific elements."
-    args_schema = ScreenshotInput
+    name: str = "screenshot"
+    description: str = "Take screenshots of the current page or specific elements."
+    args_schema: Type[BaseModel] = ScreenshotInput
     
     async def execute(self, tool_input: ScreenshotInput) -> Dict[str, Any]:
         """Take a screenshot."""
@@ -311,8 +324,8 @@ class ScreenshotTool(BrowserTool):
 class WaitTool(BrowserTool):
     """Tool for waiting and page state management."""
     
-    name = "wait"
-    description = "Wait for specific conditions or elements on the page."
+    name: str = "wait"
+    description: str = "Wait for specific conditions or elements on the page."
     
     class WaitInput(BrowserToolInput):
         """Input for wait operations."""
@@ -321,7 +334,7 @@ class WaitTool(BrowserTool):
         timeout: int = Field(default=30000, description="Timeout in milliseconds")
         state: str = Field(default="visible", description="Element state to wait for")
     
-    args_schema = WaitInput
+    args_schema: Type[BaseModel] = WaitInput
     
     async def execute(self, tool_input: WaitInput) -> Dict[str, Any]:
         """Execute the wait operation."""
@@ -382,9 +395,9 @@ def create_browser_tools(page_controller: PageController) -> List[BrowserTool]:
         List of browser tools
     """
     return [
-        NavigationTool(page_controller),
-        InteractionTool(page_controller),
-        ExtractionTool(page_controller),
-        ScreenshotTool(page_controller),
-        WaitTool(page_controller)
+        NavigationTool(page_controller=page_controller),
+        InteractionTool(page_controller=page_controller),
+        ExtractionTool(page_controller=page_controller),
+        ScreenshotTool(page_controller=page_controller),
+        WaitTool(page_controller=page_controller)
     ]

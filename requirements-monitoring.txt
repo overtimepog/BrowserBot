@@ -1,0 +1,22 @@
+# Additional requirements for production monitoring and observability
+
+# OpenTelemetry for distributed tracing
+opentelemetry-api>=1.20.0
+opentelemetry-sdk>=1.20.0
+opentelemetry-instrumentation>=0.41b0
+opentelemetry-instrumentation-aiohttp-client>=0.41b0
+opentelemetry-exporter-otlp>=1.20.0
+opentelemetry-exporter-otlp-proto-grpc>=1.20.0
+
+# Prometheus client for metrics
+prometheus-client>=0.19.0
+
+# System monitoring
+psutil>=5.9.0
+
+# Additional dependencies for production error handling
+circuitbreaker>=2.0.0
+
+# For better async support
+aiofiles>=23.0.0
+aiodns>=3.0.0

@@ -402,8 +402,12 @@ main() {
         print_error "Initial test failed. Some features may not work correctly."
     fi
     
-    # Start interactive loop
-    main_loop
+    # Set up Python path
+    export PYTHONPATH=/home/browserbot/app/src
+    
+    # Start the Python CLI instead of the bash loop
+    print_info "Starting BrowserBot Python CLI..."
+    python3.11 -m browserbot.main
 }
 
 # Handle signals

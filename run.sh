@@ -169,22 +169,103 @@ start_services() {
     print_info "To view logs: ${COMPOSE_CMD} logs -f"
 }
 
+# Validate task input for security
+validate_task_input() {
+    local task="$1"
+    
+    # Check if task is empty
+    if [ -z "$task" ]; then
+        print_error "Task cannot be empty"
+        return 1
+    fi
+    
+    # Check for potentially dangerous patterns
+    if echo "$task" | grep -qE '[`$(){};&|<>]'; then
+        print_error "Task contains potentially unsafe characters"
+        print_info "Please use simple, descriptive language for tasks"
+        return 1
+    fi
+    
+    # Check task length (reasonable limit)
+    if [ ${#task} -gt 500 ]; then
+        print_error "Task description too long (max 500 characters)"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Execute a single task
+execute_task() {
+    local task="$*"
+    
+    # Validate input
+    if ! validate_task_input "$task"; then
+        exit 2
+    fi
+    
+    print_info "Executing task: $task"
+    
+    # Ensure environment is set up
+    if ! setup_env; then
+        exit 1
+    fi
+    
+    # Build image if needed
+    build_image
+    
+    # Create necessary directories
+    mkdir -p "${SCRIPT_DIR}/logs" "${SCRIPT_DIR}/data"
+    
+    # Execute task in container
+    docker run --rm \
+        --name "${PROJECT_NAME}-task-$$" \
+        --hostname browserbot \
+        -e DISPLAY=:99 \
+        -e BROWSER_HEADLESS=true \
+        -v "${SCRIPT_DIR}/logs:/home/browserbot/app/logs" \
+        -v "${SCRIPT_DIR}/data:/home/browserbot/app/data" \
+        -v "${SCRIPT_DIR}/.env:/home/browserbot/app/.env:ro" \
+        --env-file "${SCRIPT_DIR}/.env" \
+        --security-opt seccomp=unconfined \
+        --shm-size=2g \
+        "${IMAGE_NAME}" \
+        python3.11 -m browserbot.main --task "$task"
+    
+    local exit_code=$?
+    
+    if [ $exit_code -eq 0 ]; then
+        print_success "Task completed successfully"
+    else
+        print_error "Task failed with exit code $exit_code"
+    fi
+    
+    return $exit_code
+}
+
 # Show help
 show_help() {
     cat << EOF
 🤖 BrowserBot - AI-Powered Browser Automation
 
 Usage: $0 [command] [options]
+       $0 exec "task description"
+       $0 -- "task description"
 
 Commands:
   interactive, i        Start interactive BrowserBot session (default)
   services, s          Start background services mode
+  exec, task           Execute a single task and exit
   stop                 Stop all BrowserBot services
   build               Build/rebuild Docker image
   logs                Show service logs
   status              Show system status
   test                Run system tests
   help, -h, --help    Show this help
+
+Task Execution:
+  exec "task"          Execute a single task (preferred)
+  -- "task"            Execute task using double-dash separator
 
 Options:
   --rebuild           Force rebuild of Docker image
@@ -193,13 +274,21 @@ Options:
   --api-port=PORT     Set API port (default: 8080)
 
 Examples:
-  $0                  # Start interactive mode
-  $0 interactive      # Start interactive mode
-  $0 services         # Start in background
-  $0 --rebuild        # Rebuild and start interactive
-  $0 stop             # Stop all services
+  $0                                      # Start interactive mode
+  $0 interactive                          # Start interactive mode
+  $0 exec "go to google.com and search for python"
+  $0 -- "navigate to amazon and find laptop prices"
+  $0 services                             # Start in background
+  $0 --rebuild                            # Rebuild and start interactive
+  $0 stop                                 # Stop all services
 
-For more information, visit: https://github.com/yourorg/BrowserBot
+Task Examples:
+  "go to amazon and search up how much a basic scarf is"
+  "navigate to google.com and take a screenshot"
+  "visit news websites and summarize the headlines"
+  "search for laptop prices on multiple e-commerce sites"
+
+For more information, visit: https://github.com/overtimepog/BrowserBot
 EOF
 }
 
@@ -207,6 +296,14 @@ EOF
 main() {
     local command="interactive"
     local rebuild=false
+    local task_args=()
+    
+    # Handle special case: double dash for task execution
+    if [[ $1 == "--" ]]; then
+        shift
+        execute_task "$@"
+        exit $?
+    fi
     
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -218,6 +315,12 @@ main() {
             services|s)
                 command="services"
                 shift
+                ;;
+            exec|task)
+                # Execute task with remaining arguments
+                shift
+                execute_task "$@"
+                exit $?
                 ;;
             stop)
                 command="stop"
@@ -259,10 +362,23 @@ main() {
                 API_PORT="${1#*=}"
                 shift
                 ;;
+            --task=*)
+                # Handle --task="description" format
+                local task_desc="${1#*=}"
+                execute_task "$task_desc"
+                exit $?
+                ;;
             *)
-                print_error "Unknown option: $1"
-                show_help
-                exit 1
+                # If we encounter an unknown argument and no command was specified,
+                # treat it as a direct task execution
+                if [[ "$command" == "interactive" && $# -gt 0 ]]; then
+                    execute_task "$@"
+                    exit $?
+                else
+                    print_error "Unknown option: $1"
+                    show_help
+                    exit 1
+                fi
                 ;;
         esac
     done

@@ -38,7 +38,6 @@ def setup_logging(
     
     # Configure processors
     processors: list[Processor] = [
-        structlog.stdlib.filter_by_level,
         structlog.stdlib.add_logger_name,
         add_log_level,
         structlog.stdlib.PositionalArgumentsFormatter(),
@@ -74,7 +73,6 @@ def setup_logging(
         
         formatter = structlog.stdlib.ProcessorFormatter(
             processors=file_processors,
-            foreign_pre_chain=processors[:-1],
         )
         file_handler.setFormatter(formatter)
         
