@@ -1,0 +1,101 @@
+version: '3.8'
+
+services:
+  browserbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: browserbot
+    hostname: browserbot
+    environment:
+      - DISPLAY=:99
+      - VNC_PORT=5900
+      - REDIS_URL=redis://redis:6379/0
+    ports:
+      - "5900:5900"     # VNC
+      - "8000:8000"     # Metrics
+      - "8080:8080"     # API (if needed)
+    volumes:
+      - ./logs:/home/browserbot/app/logs
+      - ./data:/home/browserbot/app/data
+      - ./config:/home/browserbot/app/config
+    networks:
+      - browserbot-network
+    depends_on:
+      - redis
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2'
+        reservations:
+          memory: 2G
+          cpus: '1'
+
+  redis:
+    image: redis:7-alpine
+    container_name: browserbot-redis
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-browserbot123}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - browserbot-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Optional: Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: browserbot-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - browserbot-network
+    restart: unless-stopped
+    profiles:
+      - monitoring
+
+  # Optional: Grafana for metrics visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: browserbot-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning
+    networks:
+      - browserbot-network
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    profiles:
+      - monitoring
+
+networks:
+  browserbot-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  redis-data:
+  prometheus-data:
+  grafana-data:
