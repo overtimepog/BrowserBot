@@ -23,19 +23,19 @@ API_PORT=${API_PORT:-8080}
 
 # Print colored output
 print_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
+    echo -e "${BLUE}[INFO]${NC} ${1:-}"
 }
 
 print_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
+    echo -e "${GREEN}[SUCCESS]${NC} ${1:-}"
 }
 
 print_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
+    echo -e "${YELLOW}[WARNING]${NC} ${1:-}"
 }
 
 print_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+    echo -e "${RED}[ERROR]${NC} ${1:-}"
 }
 
 # Check if Docker is running
@@ -93,7 +93,7 @@ setup_env() {
 
 # Build Docker image if needed
 build_image() {
-    if [ "$1" = "force" ] || ! docker image inspect "${IMAGE_NAME}" &> /dev/null; then
+    if [ "${1:-}" = "force" ] || ! docker image inspect "${IMAGE_NAME}" &> /dev/null; then
         print_info "Building BrowserBot Docker image..."
         docker build -t "${IMAGE_NAME}" "${SCRIPT_DIR}"
         print_success "Docker image built successfully"
