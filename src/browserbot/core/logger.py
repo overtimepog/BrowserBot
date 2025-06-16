@@ -10,6 +10,7 @@ import structlog
 from structlog.types import EventDict, Processor
 
 
+
 def add_log_level(logger: Any, method_name: str, event_dict: EventDict) -> EventDict:
     """Add log level to event dict."""
     event_dict["level"] = method_name.upper()
@@ -30,9 +31,12 @@ def setup_logging(
         log_file: Optional log file path
     """
     # Configure standard library logging
+    # Use stderr for logs to avoid interfering with progress display on stdout
+    log_stream = sys.stderr
+    
     logging.basicConfig(
         format="%(message)s",
-        stream=sys.stdout,
+        stream=log_stream,
         level=getattr(logging, log_level.upper()),
     )
     
@@ -98,9 +102,14 @@ def get_logger(name: str, **kwargs: Any) -> structlog.BoundLogger:
 
 
 # Initialize logging on import
+import os
 from .config import settings
+
+# Check if LOG_FORMAT is set via environment variable (e.g., from run.sh)
+log_format = os.environ.get("LOG_FORMAT", settings.log_format)
+
 setup_logging(
     log_level=settings.log_level,
-    log_format=settings.log_format,
+    log_format=log_format,
     log_file=settings.log_file,
 )

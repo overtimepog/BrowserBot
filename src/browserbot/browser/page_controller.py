@@ -13,6 +13,7 @@ from playwright.async_api import Page, Locator, ElementHandle, Error as Playwrig
 from ..core.logger import get_logger
 from ..core.errors import BrowserError, ValidationError, TimeoutError
 from ..core.retry import with_retry
+from ..core.progress import get_progress_manager, TaskStatus, progress_task
 
 logger = get_logger(__name__)
 
@@ -53,10 +54,17 @@ class PageController:
     High-level controller for page interactions with intelligent waiting and error handling.
     """
     
-    def __init__(self, page: Page, timeout: int = None):
+    def __init__(self, page: Page, timeout: int = None, enable_caching: bool = True, reduce_delays: bool = True):
         self.page = page
         self.timeout = timeout or 30000  # 30 seconds default
         self.actions_taken: List[ActionResult] = []
+        self.enable_caching = enable_caching
+        self.reduce_delays = reduce_delays
+        
+        # Initialize cache manager if enabled
+        if self.enable_caching:
+            from ..core.cache import cache_manager
+            self._cache_manager = cache_manager
     
     # Navigation methods
     
@@ -78,19 +86,29 @@ class PageController:
         Returns:
             ActionResult with navigation details
         """
+        progress = get_progress_manager()
+        
         try:
+            # Normalize URL - add https:// if no protocol specified
+            if not url.startswith(('http://', 'https://', 'file://', 'about:', 'data:')):
+                url = f"https://{url}"
+            
             logger.info(f"Navigating to {url}")
             
             # Add human-like delay
             await self._human_delay()
             
-            await self.page.goto(
-                url,
-                wait_until=wait_until,
-                timeout=timeout or self.timeout
-            )
+            progress.status(f"Loading {url}...", TaskStatus.RUNNING)
+            
+            async with progress_task(f"Navigating to {url}..."):
+                await self.page.goto(
+                    url,
+                    wait_until=wait_until,
+                    timeout=timeout or self.timeout
+                )
             
             # Wait for page to stabilize
+            progress.status("Waiting for page to stabilize...", TaskStatus.RUNNING)
             await self._wait_for_stable_dom()
             
             result = ActionResult(
@@ -164,22 +182,25 @@ class PageController:
         Returns:
             Locator for the element or None if not found
         """
+        progress = get_progress_manager()
+        
         try:
             locator = self.page.locator(selector)
             
             # Wait based on strategy
             wait_timeout = timeout or self.timeout
             
-            if wait_strategy == WaitStrategy.VISIBLE:
-                await locator.wait_for(state="visible", timeout=wait_timeout)
-            elif wait_strategy == WaitStrategy.HIDDEN:
-                await locator.wait_for(state="hidden", timeout=wait_timeout)
-            elif wait_strategy == WaitStrategy.ATTACHED:
-                await locator.wait_for(state="attached", timeout=wait_timeout)
-            elif wait_strategy == WaitStrategy.DETACHED:
-                await locator.wait_for(state="detached", timeout=wait_timeout)
-            elif wait_strategy == WaitStrategy.STABLE:
-                await self._wait_for_element_stable(locator)
+            async with progress_task(f"Looking for element: {selector[:50]}..."):
+                if wait_strategy == WaitStrategy.VISIBLE:
+                    await locator.first.wait_for(state="visible", timeout=wait_timeout)
+                elif wait_strategy == WaitStrategy.HIDDEN:
+                    await locator.first.wait_for(state="hidden", timeout=wait_timeout)
+                elif wait_strategy == WaitStrategy.ATTACHED:
+                    await locator.first.wait_for(state="attached", timeout=wait_timeout)
+                elif wait_strategy == WaitStrategy.DETACHED:
+                    await locator.first.wait_for(state="detached", timeout=wait_timeout)
+                elif wait_strategy == WaitStrategy.STABLE:
+                    await self._wait_for_element_stable(locator.first)
             
             return locator
             
@@ -206,6 +227,8 @@ class PageController:
         Returns:
             ActionResult with click details
         """
+        progress = get_progress_manager()
+        
         try:
             element = await self.find_element(selector)
             if not element:
@@ -217,8 +240,10 @@ class PageController:
             # Get element info for logging
             element_info = await self._get_element_info(element)
             
+            progress.status(f"Clicking on {element_info.get('tag_name', 'element')}: {selector[:50]}...", TaskStatus.RUNNING)
+            
             # Perform click
-            await element.click(
+            await element.first.click(
                 button=button,
                 modifiers=modifiers or [],
                 force=force,
@@ -274,6 +299,8 @@ class PageController:
         Returns:
             ActionResult with typing details
         """
+        progress = get_progress_manager()
+        
         try:
             element = await self.find_element(selector)
             if not element:
@@ -281,13 +308,16 @@ class PageController:
             
             # Clear existing text if requested
             if clear_first:
-                await element.clear()
+                await element.first.clear()
             
             # Human-like typing with random delays
             if delay is None:
                 delay = random.uniform(0.05, 0.15)
             
-            await element.type(text, delay=delay * 1000)  # Convert to ms
+            # Show typing progress
+            text_preview = text[:30] + "..." if len(text) > 30 else text
+            async with progress_task(f"Typing '{text_preview}' ({len(text)} chars)..."):
+                await element.first.type(text, delay=delay * 1000)  # Convert to ms
             
             result = ActionResult(
                 success=True,
@@ -342,13 +372,13 @@ class PageController:
             
             # Select based on provided criteria
             if value is not None:
-                await element.select_option(value=value)
+                await element.first.select_option(value=value)
                 selection_info = {"method": "value", "selection": value}
             elif label is not None:
-                await element.select_option(label=label)
+                await element.first.select_option(label=label)
                 selection_info = {"method": "label", "selection": label}
             elif index is not None:
-                await element.select_option(index=index)
+                await element.first.select_option(index=index)
                 selection_info = {"method": "index", "selection": index}
             else:
                 raise ValidationError("Must provide value, label, or index for selection")
@@ -387,20 +417,48 @@ class PageController:
         try:
             element = await self.find_element(selector)
             if element:
-                return await element.text_content()
+                return await element.first.text_content()
             return None
         except PlaywrightError:
             return None
+    
+    async def get_all_text(self, selector: str) -> List[str]:
+        """Get text content from all elements matching the selector."""
+        try:
+            elements = await self.page.locator(selector).all()
+            texts = []
+            for element in elements:
+                text = await element.text_content()
+                if text:
+                    texts.append(text.strip())
+            return texts
+        except PlaywrightError as e:
+            logger.warning(f"Failed to get text from elements: {selector}, error: {e}")
+            return []
     
     async def get_attribute(self, selector: str, attribute: str) -> Optional[str]:
         """Get an attribute value from an element."""
         try:
             element = await self.find_element(selector)
             if element:
-                return await element.get_attribute(attribute)
+                return await element.first.get_attribute(attribute)
             return None
         except PlaywrightError:
             return None
+    
+    async def get_all_attributes(self, selector: str, attribute: str) -> List[str]:
+        """Get attribute values from all elements matching the selector."""
+        try:
+            elements = await self.page.locator(selector).all()
+            attributes = []
+            for element in elements:
+                attr_value = await element.get_attribute(attribute)
+                if attr_value:
+                    attributes.append(attr_value)
+            return attributes
+        except PlaywrightError as e:
+            logger.warning(f"Failed to get attributes from elements: {selector}, error: {e}")
+            return []
     
     async def get_page_info(self) -> Dict[str, Any]:
         """Get comprehensive information about the current page."""
@@ -455,7 +513,7 @@ class PageController:
             if not element:
                 raise BrowserError(f"Element not found: {selector}")
             
-            await element.scroll_into_view_if_needed()
+            await element.first.scroll_into_view_if_needed()
             await self._human_delay(0.2, 0.5)
             
             result = ActionResult(
@@ -480,7 +538,11 @@ class PageController:
     
     async def wait_for_page_load(self, timeout: Optional[int] = None) -> None:
         """Wait for page to fully load."""
-        await self.page.wait_for_load_state("networkidle", timeout=timeout or self.timeout)
+        progress = get_progress_manager()
+        
+        async with progress_task("Waiting for page to fully load..."):
+            await self.page.wait_for_load_state("networkidle", timeout=timeout or self.timeout)
+        
         await self._wait_for_stable_dom()
     
     async def take_screenshot(
@@ -489,13 +551,38 @@ class PageController:
         element_selector: Optional[str] = None
     ) -> bytes:
         """Take a screenshot of the page or specific element."""
+        # Check cache first if enabled
+        if self.enable_caching and hasattr(self, '_cache_manager'):
+            cache_key = element_selector or ('full' if full_page else 'viewport')
+            cached_screenshot = await self._cache_manager.get_cached_screenshot(
+                self.page.url, 
+                cache_key
+            )
+            if cached_screenshot:
+                logger.debug("Using cached screenshot")
+                return cached_screenshot
+        
+        # Take new screenshot
         if element_selector:
             element = await self.find_element(element_selector)
             if element:
-                return await element.screenshot()
-            raise BrowserError(f"Element not found for screenshot: {element_selector}")
+                screenshot = await element.first.screenshot()
+            else:
+                raise BrowserError(f"Element not found for screenshot: {element_selector}")
+        else:
+            screenshot = await self.page.screenshot(full_page=full_page)
         
-        return await self.page.screenshot(full_page=full_page)
+        # Cache the screenshot if enabled
+        if self.enable_caching and hasattr(self, '_cache_manager'):
+            cache_key = element_selector or ('full' if full_page else 'viewport')
+            await self._cache_manager.cache_screenshot(
+                self.page.url,
+                cache_key,
+                screenshot,
+                ttl=300  # Cache for 5 minutes
+            )
+        
+        return screenshot
     
     # Private helper methods
     
@@ -550,7 +637,7 @@ class PageController:
             
             for _ in range(max_attempts):
                 try:
-                    box = await locator.bounding_box()
+                    box = await locator.first.bounding_box()
                     if box == prev_box:
                         stable_count += 1
                         if stable_count >= 3:  # Stable for 300ms
@@ -568,14 +655,14 @@ class PageController:
     async def _get_element_info(self, locator: Locator) -> ElementInfo:
         """Get comprehensive information about an element."""
         try:
-            tag_name = await locator.evaluate("el => el.tagName.toLowerCase()")
-            text = await locator.text_content()
-            is_visible = await locator.is_visible()
-            is_enabled = await locator.is_enabled()
-            bounding_box = await locator.bounding_box()
+            tag_name = await locator.first.evaluate("el => el.tagName.toLowerCase()")
+            text = await locator.first.text_content()
+            is_visible = await locator.first.is_visible()
+            is_enabled = await locator.first.is_enabled()
+            bounding_box = await locator.first.bounding_box()
             
             # Get attributes
-            attributes = await locator.evaluate("""
+            attributes = await locator.first.evaluate("""
                 el => {
                     const attrs = {};
                     for (const attr of el.attributes) {

@@ -64,9 +64,10 @@ class SelectInput(BrowserToolInput):
 
 class ExtractInput(BrowserToolInput):
     """Input for data extraction operations."""
-    selector: Optional[str] = Field(default=None, description="CSS selector for specific element")
-    extract_type: str = Field(default="text", description="Type of data to extract (text, attribute, html)")
+    selector: Optional[str] = Field(default=None, description="CSS selector for specific element(s)")
+    extract_type: str = Field(default="text", description="Type of data to extract (text, text_all, attribute, html)")
     attribute: Optional[str] = Field(default=None, description="Attribute name if extracting attribute")
+    multiple: bool = Field(default=False, description="Extract from all matching elements")
 
 
 class ScreenshotInput(BrowserToolInput):
@@ -235,23 +236,52 @@ class ExtractionTool(BrowserTool):
     """Tool for extracting data from web pages."""
     
     name: str = "extract"
-    description: str = "Extract text, attributes, or structured data from web pages."
+    description: str = "Extract text, attributes, or structured data from web pages. Use extract_type='text_all' or multiple=true to extract from all matching elements."
     args_schema: Type[BaseModel] = ExtractInput
     
     async def execute(self, tool_input: ExtractInput) -> Dict[str, Any]:
         """Extract data from the page."""
         try:
+            # Check cache if enabled
+            if hasattr(self.page_controller, '_cache_manager') and self.page_controller.enable_caching:
+                cache_key = f"{tool_input.extract_type}:{tool_input.selector or 'page'}:{tool_input.attribute or ''}"
+                cached_result = await self.page_controller._cache_manager.get_cached_extraction(
+                    self.page_controller.page.url,
+                    cache_key
+                )
+                if cached_result:
+                    logger.debug("Using cached extraction result")
+                    return {
+                        "success": True,
+                        "action": "extract",
+                        "extract_type": tool_input.extract_type,
+                        "selector": tool_input.selector,
+                        "data": cached_result,
+                        "message": f"Successfully extracted {tool_input.extract_type} data (cached)"
+                    }
             if tool_input.selector:
-                # Extract from specific element
+                # Extract from specific element(s)
                 if tool_input.extract_type == "text":
-                    data = await self.page_controller.get_text(tool_input.selector)
+                    if tool_input.multiple:
+                        data = await self.page_controller.get_all_text(tool_input.selector)
+                    else:
+                        data = await self.page_controller.get_text(tool_input.selector)
+                elif tool_input.extract_type == "text_all":
+                    # Backward compatibility - text_all always extracts multiple
+                    data = await self.page_controller.get_all_text(tool_input.selector)
                 elif tool_input.extract_type == "attribute":
                     if not tool_input.attribute:
                         raise ValidationError("Attribute name required for attribute extraction")
-                    data = await self.page_controller.get_attribute(
-                        tool_input.selector,
-                        tool_input.attribute
-                    )
+                    if tool_input.multiple:
+                        data = await self.page_controller.get_all_attributes(
+                            tool_input.selector,
+                            tool_input.attribute
+                        )
+                    else:
+                        data = await self.page_controller.get_attribute(
+                            tool_input.selector,
+                            tool_input.attribute
+                        )
                 else:
                     raise ValidationError(f"Unknown extract type: {tool_input.extract_type}")
             else:
@@ -263,6 +293,16 @@ class ExtractionTool(BrowserTool):
                 else:
                     # Default to page text
                     data = await self.page_controller.get_text("body")
+            
+            # Cache the result if enabled
+            if hasattr(self.page_controller, '_cache_manager') and self.page_controller.enable_caching:
+                cache_key = f"{tool_input.extract_type}:{tool_input.selector or 'page'}:{tool_input.attribute or ''}"
+                await self.page_controller._cache_manager.cache_extraction_result(
+                    self.page_controller.page.url,
+                    cache_key,
+                    data,
+                    ttl=600  # Cache for 10 minutes
+                )
             
             return {
                 "success": True,

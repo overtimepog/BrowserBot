@@ -24,6 +24,10 @@ from ..core.retry import with_retry
 
 from .tools import create_browser_tools
 from .prompts import BrowserAgentPrompts
+from .cached_llm_wrapper import CachedLLMWrapper
+from .enhanced_executor import EnhancedToolExecutor
+from ..browser.advanced_stealth import AdvancedStealth
+from ..core.feature_flags import is_feature_enabled
 
 logger = get_logger(__name__)
 
@@ -65,19 +69,22 @@ class BrowserAgent:
         model_name: Optional[str] = None,
         max_browsers: int = None,
         stealth_config: Optional[StealthConfig] = None,
-        memory_size: int = 10
+        memory_size: int = 10,
+        enable_caching: bool = True
     ):
         self.model_name = model_name or settings.model_name
+        self.enable_caching = enable_caching
         self.browser_manager = BrowserManager(
             max_browsers=max_browsers,
-            stealth_config=stealth_config
+            stealth_config=stealth_config,
+            enable_caching=enable_caching
         )
         
         # Memory configuration
         self.memory_size = memory_size
         self.chat_histories: Dict[str, InMemoryHistory] = {}
         
-        # Initialize LLM
+        # Initialize LLM with caching if enabled
         self.llm = self._create_llm()
         
         # Agent components (initialized when first used)
@@ -123,7 +130,7 @@ class BrowserAgent:
                     "X-Title": "BrowserBot"
                 }
             
-            return ChatOpenAI(
+            base_llm = ChatOpenAI(
                 model=model_config["model"],
                 temperature=model_config["temperature"],
                 max_tokens=model_config["max_tokens"],
@@ -132,6 +139,13 @@ class BrowserAgent:
                 streaming=True,
                 default_headers=default_headers
             )
+            
+            # Wrap with caching if enabled
+            if self.enable_caching:
+                logger.info("AI response caching enabled")
+                return CachedLLMWrapper(base_llm, cache_ttl=7200)
+            else:
+                return base_llm
             
         except Exception as e:
             logger.error("Failed to create LLM", error=str(e))
@@ -170,7 +184,11 @@ class BrowserAgent:
             # Get a browser context for this task
             async with self.browser_manager.get_browser() as browser_context:
                 page = await browser_context.new_page()
-                self.current_page_controller = PageController(page)
+                self.current_page_controller = PageController(
+                    page, 
+                    enable_caching=self.enable_caching,
+                    reduce_delays=True
+                )
                 
                 # Create agent executor with current browser context
                 agent_executor = await self._create_agent_executor()
@@ -287,7 +305,11 @@ class BrowserAgent:
             
             async with self.browser_manager.get_browser() as browser_context:
                 page = await browser_context.new_page()
-                self.current_page_controller = PageController(page)
+                self.current_page_controller = PageController(
+                    page, 
+                    enable_caching=self.enable_caching,
+                    reduce_delays=True
+                )
                 
                 yield {"type": "status", "message": "Browser session created"}
                 
@@ -347,12 +369,16 @@ class BrowserAgent:
             return agent_executor
             
         elif "mistral" in model_lower:
-            logger.info("Using custom Mistral tool executor", model=self.model_name)
-            
-            # For Mistral models, use custom agent with manual tool execution
-            from .mistral_tool_executor import MistralToolExecutor
-            tool_executor = MistralToolExecutor(tools, self.llm)
-            return tool_executor
+            # Check if enhanced executor is enabled
+            if is_feature_enabled("enhanced_executor"):
+                logger.info("Using enhanced tool executor", model=self.model_name)
+                tool_executor = EnhancedToolExecutor(tools, self.llm)
+                return tool_executor
+            else:
+                logger.info("Using custom Mistral tool executor", model=self.model_name)
+                from .mistral_tool_executor import MistralToolExecutor
+                tool_executor = MistralToolExecutor(tools, self.llm)
+                return tool_executor
             
         else:
             logger.info("Using fallback tool calling agent", model=self.model_name)

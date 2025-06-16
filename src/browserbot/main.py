@@ -10,17 +10,18 @@ import argparse
 from .agents.browser_agent import BrowserAgent
 from .core.config import settings
 from .core.logger import get_logger
+from .core.progress import ProgressManager
 
 logger = get_logger(__name__)
 
 
-async def interactive_mode():
+async def interactive_mode(enable_caching: bool = True):
     """Run BrowserBot in interactive mode."""
     print("🤖 BrowserBot Interactive Mode")
     print("Type 'help' for commands, 'quit' to exit")
     print("-" * 50)
     
-    async with BrowserAgent() as agent:
+    async with BrowserAgent(enable_caching=enable_caching) as agent:
         while True:
             try:
                 # Handle EOF gracefully by checking if stdin is available
@@ -129,13 +130,17 @@ The agent will use browser automation tools to complete your requests!
     print(help_text)
 
 
-async def execute_single_task(task: str):
+async def execute_single_task(task: str, enable_caching: bool = True):
     """Execute a single task and exit."""
     print(f"🤖 Executing task: {task}")
     print("-" * 50)
     
-    async with BrowserAgent() as agent:
-        result = await agent.execute_task(task)
+    # Use progress manager
+    progress = ProgressManager()
+    
+    with progress.progress_context(""):  # Empty title since we already printed one
+        async with BrowserAgent(enable_caching=enable_caching) as agent:
+            result = await agent.execute_task(task)
         
         if result["success"]:
             print("✅ Task completed successfully!")
@@ -153,12 +158,12 @@ async def execute_single_task(task: str):
             sys.exit(1)
 
 
-async def stream_task(task: str):
+async def stream_task(task: str, enable_caching: bool = True):
     """Execute a task with streaming output."""
     print(f"🤖 Streaming task: {task}")
     print("-" * 50)
     
-    async with BrowserAgent() as agent:
+    async with BrowserAgent(enable_caching=enable_caching) as agent:
         async for update in agent.stream_task(task):
             if update["type"] == "start":
                 print(f"🚀 Starting task: {update['task']}")
@@ -198,6 +203,11 @@ def main():
         action="store_true",
         help="Enable debug logging"
     )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Disable caching optimizations"
+    )
     
     args = parser.parse_args()
     
@@ -208,14 +218,30 @@ def main():
     if args.debug:
         settings.log_level = "DEBUG"
     
+    
+    # Determine caching setting
+    enable_caching = not args.no_cache
+    
+    # Reinitialize logging for task mode to ensure proper output
+    if args.task:
+        from .core.logger import setup_logging
+        import os
+        # Use text format for console output during tasks
+        log_format = os.environ.get("LOG_FORMAT", "text")
+        setup_logging(
+            log_level=settings.log_level,
+            log_format=log_format,
+            log_file=settings.log_file
+        )
+    
     try:
         if args.task:
             if args.stream:
-                asyncio.run(stream_task(args.task))
+                asyncio.run(stream_task(args.task, enable_caching))
             else:
-                asyncio.run(execute_single_task(args.task))
+                asyncio.run(execute_single_task(args.task, enable_caching))
         else:
-            asyncio.run(interactive_mode())
+            asyncio.run(interactive_mode(enable_caching))
             
     except KeyboardInterrupt:
         print("\n👋 Goodbye!")

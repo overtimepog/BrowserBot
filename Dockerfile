@@ -92,8 +92,8 @@ RUN python3.11 -m pip install --upgrade pip setuptools wheel
 # Copy application code
 COPY --chown=browserbot:browserbot . .
 
-# Install package
-RUN python3.11 -m pip install -e .
+# Install package with dev dependencies for testing
+RUN python3.11 -m pip install -e ".[dev]"
 
 # Install browser dependencies as root first
 USER root

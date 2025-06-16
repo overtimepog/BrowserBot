@@ -20,6 +20,7 @@ from .mistral_parser import MistralToolParser
 from .prompts import BrowserAgentPrompts
 from ..core.logger import get_logger
 from ..core.errors import AIModelError, BrowserError
+from ..core.progress import get_progress_manager, TaskStatus, progress_task
 
 logger = get_logger(__name__)
 
@@ -82,9 +83,13 @@ class MistralToolExecutor:
             # Main execution loop
             current_context = formatted_prompt
             
+            progress = get_progress_manager()
+            
             while iteration < max_iterations:
                 iteration += 1
                 logger.debug(f"Mistral execution iteration {iteration}")
+                
+                progress.status(f"AI thinking (step {iteration}/{max_iterations})...", TaskStatus.INFO)
                 
                 # Get response from LLM
                 response = await self._get_llm_response(current_context)
@@ -92,12 +97,15 @@ class MistralToolExecutor:
                 # Check if this is a final answer
                 if self._is_final_answer(response):
                     logger.info("Mistral provided final answer", iteration=iteration)
+                    progress.status("AI has completed the task", TaskStatus.SUCCESS)
                     return {
                         "success": True,
                         "output": response,
                         "intermediate_steps": intermediate_steps,
                         "iterations": iteration
                     }
+                
+                progress.status("Parsing AI tool requests...", TaskStatus.RUNNING)
                 
                 # Parse tool calls from response
                 tool_calls = self._extract_tool_calls(response)
@@ -141,11 +149,25 @@ class MistralToolExecutor:
                     # Execute the tool
                     try:
                         logger.debug(f"Executing tool: {tool_name}", args=tool_args)
-                        tool_result = await self.tools[tool_name]._arun(tool_args)
+                        
+                        async with progress_task(f"Executing action: {tool_name}..."):
+                            tool_result = await self.tools[tool_name]._arun(tool_args)
+                        
                         intermediate_steps.append((tool_call, tool_result))
                         
                         # Update context with tool result
-                        current_context += f"\n\nTool {tool_name} executed with result: {tool_result}\n\nContinue with the task or provide the final answer:"
+                        # Special handling for extract tool to ensure AI uses actual data
+                        if tool_name == "extract" and isinstance(tool_result, dict):
+                            if tool_result.get("success") and "data" in tool_result:
+                                data = tool_result.get("data", [])
+                                if isinstance(data, list) and len(data) > 0:
+                                    current_context += f"\n\nTool {tool_name} executed successfully and extracted {len(data)} items. The actual extracted data is: {tool_result}\n\nIMPORTANT: Use ONLY this extracted data in your response. Do NOT make up or invent any data.\n\nContinue with the task or provide the final answer:"
+                                else:
+                                    current_context += f"\n\nTool {tool_name} executed but returned no data or empty result: {tool_result}\n\nThe extraction found no matching elements. Try a different selector or report that no data was found.\n\nContinue with the task or provide the final answer:"
+                            else:
+                                current_context += f"\n\nTool {tool_name} failed: {tool_result}\n\nThe extraction was not successful. Try a different approach or report the issue.\n\nContinue with the task or provide the final answer:"
+                        else:
+                            current_context += f"\n\nTool {tool_name} executed with result: {tool_result}\n\nContinue with the task or provide the final answer:"
                         
                     except Exception as e:
                         error_msg = f"Tool execution failed: {str(e)}"
@@ -175,11 +197,17 @@ class MistralToolExecutor:
     
     async def _get_llm_response(self, prompt: str) -> str:
         """Get response from the language model."""
+        progress = get_progress_manager()
+        
         try:
             messages = [HumanMessage(content=prompt)]
-            response = await self.llm.ainvoke(messages)
+            
+            async with progress_task("Waiting for AI response..."):
+                response = await self.llm.ainvoke(messages)
+            
             return response.content if hasattr(response, 'content') else str(response)
         except Exception as e:
+            progress.status(f"AI response failed: {str(e)}", TaskStatus.FAILED)
             logger.error("LLM invocation failed", error=str(e))
             raise AIModelError(f"Failed to get LLM response: {e}")
     
@@ -530,6 +558,23 @@ IMPORTANT INSTRUCTIONS:
 2. Execute tools step by step to complete the task
 3. After each tool execution, wait for the result before proceeding
 4. When you have the final answer, provide a clear summary
+
+EXTRACTION TIPS:
+- To extract text from MULTIPLE elements matching a selector, use extract_type="text_all" or set multiple=true
+- For single element: {{"name": "extract", "arguments": {{"selector": ".class", "extract_type": "text"}}}}
+- For all matching elements: {{"name": "extract", "arguments": {{"selector": ".class", "extract_type": "text_all"}}}}
+- Common selectors: ".classname" for class, "#id" for ID, "tagname" for HTML tags
+
+IMPORTANT EXTRACTION RULES:
+- ALWAYS use extract_type="text_all" when extracting multiple items (e.g., list of stories, products, search results)
+- NEVER make up or hallucinate data - only return what was actually extracted
+- If extraction returns empty or fails, report that instead of inventing fake data
+
+HACKER NEWS SPECIFIC:
+- Story titles: Use selector ".titleline" (NOT "h2.titleline > a") with extract_type="text_all"
+- Example: {{"name": "extract", "arguments": {{"selector": ".titleline", "extract_type": "text_all"}}}}
+- Story links: Use selector ".titleline a" with extract_type="attribute", attribute="href", multiple=true
+- User/points: Use selector ".subtext" for metadata
 
 Task: {task}
 

@@ -80,8 +80,12 @@ class Settings(BaseSettings):
     
     # Memory/Storage Configuration
     redis_url: str = Field(
-        default="redis://localhost:6379/0",
+        default="redis://redis:6379/0",
         description="Redis connection URL"
+    )
+    redis_password: Optional[str] = Field(
+        default="browserbot123",
+        description="Redis password"
     )
     database_url: str = Field(
         default="sqlite:///./data/browserbot.db",
@@ -118,16 +122,28 @@ class Settings(BaseSettings):
     
     # Performance Configuration
     max_concurrent_browsers: int = Field(
-        default=5,
+        default=8,
         description="Maximum concurrent browser instances"
+    )
+    min_warm_browsers: int = Field(
+        default=2,
+        description="Minimum warm browser instances to maintain"
     )
     max_retries: int = Field(
         default=3,
         description="Maximum retry attempts"
     )
     retry_delay: float = Field(
-        default=1.0,
+        default=0.5,
         description="Initial retry delay in seconds"
+    )
+    enable_caching: bool = Field(
+        default=True,
+        description="Enable caching for performance optimization"
+    )
+    reduce_delays: bool = Field(
+        default=True,
+        description="Reduce delays for faster execution"
     )
     
     # Monitoring Configuration
