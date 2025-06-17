@@ -408,6 +408,98 @@ run_tests() {
     return $exit_code
 }
 
+# Start interactive CLI mode
+start_interactive_cli() {
+    echo -e "\n🤖 BrowserBot Interactive CLI"
+    echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo -e "Starting interactive mode in Docker container\n"
+    
+    # Step 1: Initialize environment
+    if [ "$USE_HALO" = true ]; then
+        halo_or_print spinner "Initializing environment" 2 &
+        local spinner_pid=$!
+    else
+        halo_or_print spinner "Initializing environment"
+    fi
+    
+    if ! setup_env; then
+        if [ "$USE_HALO" = true ] && [ -n "${spinner_pid:-}" ]; then
+            kill $spinner_pid 2>/dev/null || true
+            wait $spinner_pid 2>/dev/null || true
+        fi
+        exit 1
+    fi
+    
+    if [ "$USE_HALO" = true ] && [ -n "${spinner_pid:-}" ]; then
+        kill $spinner_pid 2>/dev/null || true
+        wait $spinner_pid 2>/dev/null || true
+    fi
+    
+    # Step 2: Check Docker image
+    if ! docker image inspect "${IMAGE_NAME}" &> /dev/null; then
+        build_image
+    fi
+    
+    # Step 3: Start Redis
+    start_redis
+    
+    # Step 4: Prepare workspace
+    if [ "$USE_HALO" = true ]; then
+        halo_or_print spinner "Preparing workspace" 1 &
+        spinner_pid=$!
+    else
+        halo_or_print spinner "Preparing workspace"
+    fi
+    mkdir -p "${SCRIPT_DIR}/logs" "${SCRIPT_DIR}/data"
+    if [ "$USE_HALO" = true ] && [ -n "${spinner_pid:-}" ]; then
+        kill $spinner_pid 2>/dev/null || true
+        wait $spinner_pid 2>/dev/null || true
+    fi
+    
+    # Step 5: Cleanup any existing interactive container
+    cleanup_container
+    
+    # Step 6: Launch Interactive BrowserBot
+    halo_or_print info "Starting interactive BrowserBot session..."
+    echo -e "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo -e "Type 'help' for commands, 'quit' to exit"
+    echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    
+    # Launch interactive container
+    docker run -it --rm \
+        --name "${CONTAINER_NAME}" \
+        --hostname browserbot \
+        -e DISPLAY=:99 \
+        -e BROWSER_HEADLESS=false \
+        -e REDIS_URL=redis://:browserbot123@host.docker.internal:6379/0 \
+        -e LOG_FORMAT=text \
+        -e PYTHONUNBUFFERED=1 \
+        -e PYTHONIOENCODING=utf-8 \
+        -p "${VNC_PORT}:5900" \
+        -p "${METRICS_PORT}:8000" \
+        -p "${API_PORT}:8080" \
+        -v "${SCRIPT_DIR}/logs:/home/browserbot/app/logs" \
+        -v "${SCRIPT_DIR}/data:/home/browserbot/app/data" \
+        -v "${SCRIPT_DIR}/.env:/home/browserbot/app/.env:ro" \
+        --env-file "${SCRIPT_DIR}/.env" \
+        --security-opt seccomp=unconfined \
+        --shm-size=2g \
+        --add-host=host.docker.internal:host-gateway \
+        "${IMAGE_NAME}" \
+        python3.11 -u -m browserbot.main
+    
+    local exit_code=$?
+    
+    if [ $exit_code -eq 0 ]; then
+        halo_or_print success "Interactive session ended successfully"
+    else
+        halo_or_print info "Interactive session ended with exit code $exit_code"
+    fi
+    
+    return $exit_code
+}
+
+
 # Show help
 show_help() {
     cat << EOF
@@ -418,6 +510,7 @@ Usage: $0 [command] [options]
 
 Commands:
   task, exec         Execute a single task
+  cli, interactive   Start interactive CLI mode
   test               Run all tests inside Docker container
   build              Force rebuild Docker image
   help, -h, --help   Show this help
@@ -425,6 +518,7 @@ Commands:
 Examples:
   $0 task "go to google.com and search for python"
   $0 task "navigate to amazon and find laptop prices"
+  $0 cli             # Start interactive mode
   $0 test            # Run all tests
   $0 build           # Force rebuild Docker image
 
@@ -445,6 +539,9 @@ main() {
         task|exec)
             shift
             execute_task "$@"
+            ;;
+        cli|interactive)
+            start_interactive_cli
             ;;
         test)
             run_tests

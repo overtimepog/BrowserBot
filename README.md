@@ -140,7 +140,9 @@ See `src/browserbot/core/config.py` for all available configuration options.
 
 Launch the interactive terminal:
 ```bash
-./run.sh
+./run.sh cli
+# or
+./run.sh interactive
 ```
 
 Then use natural language commands:
@@ -151,6 +153,16 @@ BrowserBot> chat What can you help me automate?
 BrowserBot> screenshot
 BrowserBot> help
 ```
+
+### Available Commands
+
+| Command | Description |
+|---------|-------------|
+| `./run.sh cli` | Start interactive CLI mode |
+| `./run.sh task "description"` | Execute a single task |
+| `./run.sh test` | Run all tests |
+| `./run.sh build` | Force rebuild Docker image |
+| `./run.sh help` | Show help information |
 
 ### Visual Browser Access
 
